@@ -12,12 +12,14 @@
 int main(int argc, char *argv[])
 {
     if (argc < 3)
-    {
-        printf("ERROR: Invalid Number of Arguments.\n");
-	printf("Total number of arguments should be 2.\n");
-	printf("The order of the arguments should be:\n");
-	printf("    1)File Path.\n");
-	printf("    2)String to be written in the specified file path.\n");
+    {   
+	syslog(LOG_ERR,
+	       "ERROR: Invalid Number of Arguments. "
+	       "Total number of arguments should be 2. "
+	       "The order of the arguments should be:"
+               "    1)File Path."
+	       "    2)String to be written in the specified file path.");
+   	closelog();	
 	return 1;
     }
 	
@@ -32,6 +34,7 @@ int main(int argc, char *argv[])
     if (fd == -1)
     {
         syslog(LOG_ERR, "Error opening file\n");
+	closelog();
 	return 1;
     }
     else
@@ -44,6 +47,7 @@ int main(int argc, char *argv[])
     {
 	syslog(LOG_ERR, "Error writing to file\n");
 	close(fd);
+	closelog();
 	return 1;
     }
     else if (nr != count)
@@ -54,6 +58,7 @@ int main(int argc, char *argv[])
     {
 	write(fd, newLine, 1);
 	syslog(LOG_DEBUG, "Writing %s to %s\n", word, filePath);
+	closelog();
 	return 0;
     }
 }
