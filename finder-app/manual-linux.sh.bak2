@@ -13,12 +13,12 @@ FINDER_APP_DIR="$(realpath "$(dirname "$0")")"
 ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
 
-COMPILER=$(find / \
+COMPILER="$(find / \
 	-name aarch64-none-linux-gnu-gcc \
 	-type f \
 	-print \
 	-quit \
-	2>/dev/null)
+	2>/dev/null)"
 
 COMPILER_DIR="$(dirname "${COMPILER}")"
 export PATH="${COMPILER_DIR}:${PATH}"
@@ -124,11 +124,10 @@ cp -L "$("${CROSS_COMPILE}gcc" \
 	lib64/
 cp -L "$("${CROSS_COMPILE}gcc" \
 	-print-file-name=libm.so.6)" \
-	lib64/
+	lib64\
 cp -L "$("${CROSS_COMPILE}gcc" \
 	-print-file-name=libresolv.so.2)" \
-	lib64/
-
+	lib64\
 # TODO: Make device nodes
 mkdir -p dev
 sudo mknod -m 666 dev/null c 1 3
