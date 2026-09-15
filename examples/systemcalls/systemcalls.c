@@ -1,4 +1,8 @@
 #include "systemcalls.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <sys/wait.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -16,8 +20,20 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
+    if(cmd == NULL)
+    {
+	return false;
+    }
 
-    return true;
+    if(system(cmd) == 0)
+    {
+        return true;
+    }
+    
+    else
+    {
+	return false;
+    }
 }
 
 /**
@@ -40,14 +56,13 @@ bool do_exec(int count, ...)
     va_start(args, count);
     char * command[count+1];
     int i;
+    
     for(i=0; i<count; i++)
     {
         command[i] = va_arg(args, char *);
+    
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
 
 /*
  * TODO:
@@ -59,9 +74,49 @@ bool do_exec(int count, ...)
  *
 */
 
-    va_end(args);
+    pid_t pid = fork();
+    int status;
+    
+    if(pid == -1)
+    {
+        perror("error fork\n");
+	va_end(args);
+	return false;
+    }
 
-    return true;
+    else if(pid == 0)
+    {
+        execv(command[0], command);
+	perror("Error executing command in do_exec()\n");
+	   // execv() only return if it fails;
+	exit(EXIT_FAILURE);
+    }
+
+    else
+    {
+	if(waitpid(pid, &status, 0) == -1)
+	{
+	    perror("waitpid error\n");
+	    va_end(args);
+	    return false;
+	}
+
+	va_end(args);
+
+	if (WIFEXITED (status))
+	{
+	    /*
+	     * ! because WEXITSTATUS returns 0
+	     * on success and that is false in C
+	     */
+	    return !WEXITSTATUS(status);
+	}
+	
+	else
+	{
+	    return false;
+	}
+    }
 }
 
 /**
@@ -75,15 +130,13 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     va_start(args, count);
     char * command[count+1];
     int i;
+    
     for(i=0; i<count; i++)
     {
         command[i] = va_arg(args, char *);
     }
+    
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
-
 
 /*
  * TODO
@@ -93,7 +146,56 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *
 */
 
-    va_end(args);
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+    pid_t pid;
+    int status;
+    
+    if (fd < 0)
+    {
+	perror("open perror\n");
+	return false;
+    }
+    
+    switch (pid = fork())
+    {
+	case -1:
+		perror("error fork");
+        	va_end(args);
+        	return false;
+	case 0:
+		if (dup2(fd, 1) < 0)
+		{
+		    perror("dup2 perror");
+		}
 
-    return true;
+		close(fd);
+        	execv(command[0], command);
+        	exit(EXIT_FAILURE);
+    
+        default:
+		close(fd);
+        	
+		if(waitpid(pid, &status, 0) == -1)
+        	{
+            	    //perror("wait");
+            	    va_end(args);
+            	    return false;
+        	}
+
+        	va_end(args);
+
+        	if (WIFEXITED (status))
+        	{
+            	    /*
+                    * ! because WEXITSTATUS returns 0
+             	    * on success and that is false in C
+             	    */
+            	    return !WEXITSTATUS(status);
+        	}
+
+        	else
+        	{
+            	    return false;
+        	}
+    }    
 }
