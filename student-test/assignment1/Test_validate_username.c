@@ -18,5 +18,10 @@ void test_validate_my_username()
      * TODO: Replace the line below with your code here as described above to verify your /conf/username.txt 
      * config file and my_username() functions are setup properly
      */
-    TEST_ASSERT_EQUAL_STRING_MESSAGE(malloc_username_from_conf_file(), my_username(), "passed");
+    char *dynamicUsername = malloc_username_from_conf_file();
+    const char *username = my_username();
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(dynamicUsername, username, "Test FAILED");
+    free(dynamicUsername);
+    free(dynamicUsername);
+    free(username);
 }
