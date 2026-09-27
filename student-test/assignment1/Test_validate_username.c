@@ -22,6 +22,5 @@ void test_validate_my_username()
     const char *username = my_username();
     TEST_ASSERT_EQUAL_STRING_MESSAGE(dynamicUsername, username, "Test FAILED");
     free(dynamicUsername);
-    free(dynamicUsername);
     free(username);
 }
