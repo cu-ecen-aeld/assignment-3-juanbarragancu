@@ -1,9 +1,9 @@
 # Makefile
 CROSS_COMPILE ?=
-CC := $(CROSS_COMPILE)gcc
-CFLAGS := -Wall -Wextra -Werror
-TARGET := aesdsocket
-OBJECTS := aesdsocket.o
+CC ?= $(CROSS_COMPILE)gcc
+CFLAGS ?= -Wall -Wextra -Werror
+TARGET ?= aesdsocket
+OBJECTS ?= aesdsocket.o
 
 .PHONY: all clean
 
