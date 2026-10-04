@@ -12,7 +12,7 @@ $(TARGET): $(OBJECTS)
 	$(CC) $(OBJECTS) -o $@
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@ $(LDFLAGS)
 
 clean:
 	rm -f $(TARGET) *.o
