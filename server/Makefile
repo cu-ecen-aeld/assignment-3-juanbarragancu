@@ -3,6 +3,7 @@ CROSS_COMPILE ?=
 CC ?= $(CROSS_COMPILE)gcc
 CFLAGS ?= -Wall -Wextra -Werror
 TARGET ?= aesdsocket
+LDFLAGS ?= -lpthread -lrt
 OBJECTS ?= aesdsocket.o
 
 .PHONY: all clean
