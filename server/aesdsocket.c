@@ -363,10 +363,6 @@ int main(int argc, char **argv)
     struct sigaction new_action;
     pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-if(USE_AESD_CHAR_DEVICE)
-            {
-            printf("using aesdchar\n");
-            }
     SLIST_HEAD(thread_data_list, thread_data) head;
     SLIST_INIT(&head);
 
