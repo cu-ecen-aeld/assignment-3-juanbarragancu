@@ -237,59 +237,72 @@ static void *receive_send_client(void* thread_param)
             
             size_t len_of_packet = (size_t)(end_of_packet - curr_position) + 1;
 
-            //lock here so the worker threads can't overwrite each other
-            if(pthread_mutex_lock(thread_func_args->mutex) != 0)
+            if(!USE_AESD_CHAR_DEVICE)
             {
-                syslog(LOG_ERR,"mutex lock failed\n");
-                cleanup_worker_thread_and_data(thread_func_args, data);
-                return NULL;
+                //lock here so the worker threads can't overwrite each other
+                if(pthread_mutex_lock(thread_func_args->mutex) != 0)
+                {
+                    syslog(LOG_ERR,"mutex lock failed\n");
+                    cleanup_worker_thread_and_data(thread_func_args, data);
+                    return NULL;
+                }
             }
 
             if(packet_work(thread_func_args->fd, curr_position, len_of_packet, WRITE) != 0)
             {
                 syslog(LOG_ERR, "write() failed");
 
-                if(pthread_mutex_unlock(thread_func_args->mutex) != 0)
+                if(!USE_AESD_CHAR_DEVICE)
                 {
-                    syslog(LOG_ERR, "mutex unlock failed at write()\n");
-                }
-                cleanup_worker_thread_and_data(thread_func_args, data);
-                return NULL;
-            }
-
-            //return to the beginning of the file
-            off_t pos_in_file = lseek(thread_func_args->fd, 0, SEEK_SET);
-            if(pos_in_file == (off_t) -1)
-            {
-                //error returning to the start of the file
-                if(pthread_mutex_unlock(thread_func_args->mutex) != 0)
-                {
-                    syslog(LOG_ERR, "mutex unlock failed at lseek()\n");
-                }
-                cleanup_worker_thread_and_data(thread_func_args, data);
-                return NULL;
-            }
-
-            while(true)
-            {
-                char read_buffer[KILOBYTE];
-
-                ssize_t bytes_read = read(thread_func_args->fd, read_buffer, sizeof(read_buffer));
-
-                if(bytes_read < 0) //check for errors or closed connection
-                {
-                    syslog(LOG_ERR, "read() failed or connection closed");
                     if(pthread_mutex_unlock(thread_func_args->mutex) != 0)
                     {
-                        syslog(LOG_ERR, "mutex unlock failed at read()\n");
+                        syslog(LOG_ERR, "mutex unlock failed at write()\n");
+                    }
+                }
+
+                cleanup_worker_thread_and_data(thread_func_args, data);
+                return NULL;
+            }
+
+            if(!USE_AESD_CHAR_DEVICE)
+            {
+                //return to the beginning of the file
+                off_t pos_in_file = lseek(thread_func_args->fd, 0, SEEK_SET);
+                if(pos_in_file == (off_t) -1)
+                {
+                    //error returning to the start of the file
+                    if(pthread_mutex_unlock(thread_func_args->mutex) != 0)
+                    {
+                        syslog(LOG_ERR, "mutex unlock failed at lseek()\n");
                     }
                     cleanup_worker_thread_and_data(thread_func_args, data);
                     return NULL;
                 }
-                else if(bytes_read == 0)
+            }
+
+            ssize_t bytes_read = 1;
+            while(bytes_read != 0)
+            {
+                char read_buffer[KILOBYTE];
+
+                bytes_read = read(thread_func_args->fd, read_buffer, sizeof(read_buffer));
+
+                if(bytes_read < 0) //check for errors or closed connection
                 {
-                    break; //no more bytes to read from the file
+                    syslog(LOG_ERR, "read() failed or connection closed");
+                
+                    if(!USE_AESD_CHAR_DEVICE)
+                    {
+                        if(pthread_mutex_unlock(thread_func_args->mutex) != 0)
+                        {
+                            syslog(LOG_ERR, "mutex unlock failed at read()\n");
+                        }
+                    }
+                
+                    cleanup_worker_thread_and_data(thread_func_args, data);
+                    return NULL;
                 }
+
                 if(packet_work(thread_func_args->client_socket_fd, read_buffer, bytes_read, SEND) != 0)
                 {
                     syslog(LOG_ERR, "send() failed");
@@ -348,8 +361,12 @@ int main(int argc, char **argv)
     struct addrinfo *servinfo;		//pointer to the result
     struct sockaddr_storage incoming_addr;
     struct sigaction new_action;
-	pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
+if(USE_AESD_CHAR_DEVICE)
+            {
+            printf("using aesdchar\n");
+            }
     SLIST_HEAD(thread_data_list, thread_data) head;
     SLIST_INIT(&head);
 
@@ -415,41 +432,45 @@ int main(int argc, char **argv)
         }
     }
 
-    //timer implementation
-    //need to create timer after daemon so child has it as well
     timer_t timer;
     struct thread_data *timer_thread = malloc(sizeof *timer_thread);
-    if(timer_thread != NULL)
+    if(!USE_AESD_CHAR_DEVICE)
     {
-        int clock_id = CLOCK_MONOTONIC;
-        struct sigevent sev;
-        struct itimerspec timer_struct;
-        
-        memset(&sev, 0, sizeof(sev));
-        memset(&timer_struct, 0, sizeof(timer_struct));
-
-        timer_thread->mutex = &mutex;
-
-        //register signal handling for SIGEV_THREAD
-        sev.sigev_notify = SIGEV_THREAD;
-        sev.sigev_value.sival_ptr = timer_thread;
-        sev.sigev_notify_function = timer_function;
-        timer_struct.it_value.tv_sec = INTITAL_ALARM; //first alarm after 10 seconds
-        timer_struct.it_interval.tv_sec = INTERVAL; //subsequent alarms every 10 seconds
-        if(timer_create(clock_id, &sev, &timer) != 0)
+        //timer implementation
+        //need to create timer after daemon so child has it as well
+        if(timer_thread != NULL)
         {
-            syslog(LOG_ERR, "Error %d (%s) creating timer", errno, strerror(errno));
+            int clock_id = CLOCK_MONOTONIC;
+            struct sigevent sev;
+            struct itimerspec timer_struct;
+            
+            memset(&sev, 0, sizeof(sev));
+            memset(&timer_struct, 0, sizeof(timer_struct));
+
+            timer_thread->mutex = &mutex;
+
+            //register signal handling for SIGEV_THREAD
+            sev.sigev_notify = SIGEV_THREAD;
+            sev.sigev_value.sival_ptr = timer_thread;
+            sev.sigev_notify_function = timer_function;
+            timer_struct.it_value.tv_sec = INTITAL_ALARM; //first alarm after 10 seconds
+            timer_struct.it_interval.tv_sec = INTERVAL; //subsequent alarms every 10 seconds
+            if(timer_create(clock_id, &sev, &timer) != 0)
+            {
+                syslog(LOG_ERR, "Error %d (%s) creating timer", errno, strerror(errno));
+            }
+
+            if(timer_settime(timer, 0, &timer_struct, NULL) != 0)
+            {
+                syslog(LOG_ERR, "Error %d (%s) setting timer", errno, strerror(errno));
+            }
         }
-
-        if(timer_settime(timer, 0, &timer_struct, NULL) != 0)
+        else
         {
-            syslog(LOG_ERR, "Error %d (%s) setting timer", errno, strerror(errno));
+            syslog(LOG_ERR, "Malloc failed to allocate timer_thread\n");
         }
     }
-    else
-    {
-        syslog(LOG_ERR, "Malloc failed to allocate timer_thread\n");
-    }
+
 
     //check if we're able to start listening for client sockets
     if(listen(sockfd, BACKLOG) == -1)
@@ -538,6 +559,13 @@ int main(int argc, char **argv)
 
     if (graceful_exit)
     {
+
+        timer_delete(timer);
+        if(timer_thread != NULL)
+        {
+            free(timer_thread);
+        }        
+
         cleanup_log_statement(LOG_DEBUG, "Caught signal, exiting", sockfd, servinfo);
         closelog();
 
@@ -551,6 +579,14 @@ int main(int argc, char **argv)
             free(td);
         }
     }
+    else
+    {
+        timer_delete(timer);
+        if(timer_thread != NULL)
+        {
+            free(timer_thread);
+        }        
+    }
     
     //close file if program ended early due to error or signal
     if(fd != -1)
@@ -558,13 +594,12 @@ int main(int argc, char **argv)
         close(fd);
     }
 
-    //delete file
-    remove(FILE_ADDR);
-    timer_delete(timer);
-    if(timer_thread != NULL)
+    if(!USE_AESD_CHAR_DEVICE)
     {
-        free(timer_thread);
+        //delete file
+        remove(FILE_ADDR);     
     }
+
 
     return 0;
 }

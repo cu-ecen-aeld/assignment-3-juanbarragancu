@@ -21,7 +21,7 @@
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
-MODULE_AUTHOR("Your Name Here"); /** TODO: fill in your name **/
+MODULE_AUTHOR("Juan Barragan");
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
@@ -29,17 +29,22 @@ struct aesd_dev aesd_device;
 int aesd_open(struct inode *inode, struct file *filp)
 {
     PDEBUG("open");
-    /**
-     * TODO: handle open
-     */
+
+    //get the aesd_dev structure containing the passed inode's i_cdev.
+    struct aesd_dev *dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
+
+    //set private_data
+    filp->private_data = dev;
+
     return 0;
 }
 
 int aesd_release(struct inode *inode, struct file *filp)
 {
     PDEBUG("release");
+
     /**
-     * TODO: handle release
+     * No memory allocation occurred in aesd_open. Nothing to release.
      */
     return 0;
 }
@@ -48,23 +53,223 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
     ssize_t retval = 0;
+    size_t total_buf_len = 0;
+    size_t traversed = 0;
+    size_t remaining = count;
+    size_t unread_bytes = 0;
+    size_t read_bytes = 0;
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
-    /**
-     * TODO: handle read
-     */
-    return retval;
+
+    struct aesd_dev *dev = filp->private_data;
+    if(mutex_lock_interruptible(&dev->lock))
+    {
+        return -ERESTARTSYS;
+    }
+
+    //nothing to return or f_pos is negative
+    if(count == 0 || *f_pos < 0)
+    {
+        goto out;
+    }
+
+    uint8_t index;
+    struct aesd_buffer_entry *entry;
+    AESD_CIRCULAR_BUFFER_FOREACH(entry,&dev->cbuf,index) 
+    {
+        total_buf_len += entry->size;
+    }
+
+    //checking whether f_pos is at the EOF or beyond it
+    if(*f_pos >= total_buf_len)
+    {
+        goto out;
+    }
+
+    while(remaining > 0)
+    {
+        size_t entry_offset_byte = 0;
+        struct aesd_buffer_entry *match = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->cbuf,
+                *f_pos, &entry_offset_byte);
+
+        if(!match)
+        {
+            /**
+             * If bytes have already been copied to the __user buf,
+             * return partial read count.
+            */
+            if(0 < traversed)
+            {
+                retval = traversed;
+            }
+            goto out;
+        }
+        else
+        {
+            size_t bytes_to_copy = 0;
+            /** 
+             * Copy at most the remaining requested bytes or the bytes left in the entry.
+             * Whichever is smaller.
+            */
+            if((match->size - entry_offset_byte) < remaining)
+            {
+                bytes_to_copy = (match->size - entry_offset_byte);
+            }
+            else
+            {
+                bytes_to_copy = remaining;
+            }
+
+            //copy_to_user returns how many bytes were not copied
+            unread_bytes = copy_to_user((buf + traversed), (match->buffptr + entry_offset_byte), bytes_to_copy);
+
+            //update our counters and file position
+            read_bytes = bytes_to_copy - unread_bytes;
+            remaining -= read_bytes;
+            *f_pos += read_bytes;
+            traversed += read_bytes;
+
+            /**
+             * If there were unread bytes leftover, return the amount that were read
+             * and exit. Partial read or -EFAULT error.
+             */
+            if(unread_bytes)
+            {
+                if(0 < traversed)
+                {
+                    retval = traversed;
+                }
+                else
+                {
+                    retval = -EFAULT;
+                }
+
+                goto out;
+            }
+        }
+    }
+
+    retval = traversed;
+    goto out;
+
+    out:
+        mutex_unlock(&dev->lock);
+        return retval;
 }
 
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
                 loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
+    size_t total_written = 0;
+    size_t traversed = 0;
+    size_t remaining = count;
+    char *end_of_packet = NULL;
+
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
-    /**
-     * TODO: handle write
-     */
-    return retval;
+
+    struct aesd_dev *dev = filp->private_data;
+    if(mutex_lock_interruptible(&dev->lock))
+    {
+        return -ERESTARTSYS;
+    }
+
+    //nothing to write
+    if(count == 0)
+    {
+        retval = 0;
+        goto out;
+    }
+
+    
+    char *kernel_copy = kmalloc(count, GFP_KERNEL);
+    if(!kernel_copy)
+    {
+        goto out;
+    }
+
+    //kernel copy of the passed user buffer 
+    if(copy_from_user(kernel_copy, buf, count))
+    {
+        kfree(kernel_copy);
+        retval = -EFAULT;
+        goto out;
+    }
+
+    char *curr_position = kernel_copy;
+
+    //process until there's no more bytes to write
+    while(remaining > 0)
+    {
+        //find '\n'
+        end_of_packet = memchr(curr_position, '\n', remaining);
+        
+        if(end_of_packet == NULL) //'\n' wasn't found
+        {
+            traversed = remaining;
+        }
+        else
+        {
+            traversed = end_of_packet - curr_position + 1;
+        } 
+
+        //resizing working_entry to fit the new write data
+        size_t tmp_size = dev->working_entry.size + traversed;
+        char *tmp_buf = krealloc(dev->working_entry.buffptr, tmp_size, GFP_KERNEL);
+
+        if(!tmp_buf)
+        {
+            /**
+             * If krealloc failed after any bytes have been appended to working_entry,
+             * return the number of bytes written during this call.
+             */
+            if(total_written > 0)
+            {
+                retval = (ssize_t)total_written;
+            }
+            kfree(kernel_copy);
+            goto out;
+        }
+
+        //append the new bytes to the tmp_buffer
+        memcpy(tmp_buf + dev->working_entry.size, curr_position, traversed);
+        //update working_entry
+        dev->working_entry.buffptr = tmp_buf;
+        dev->working_entry.size = tmp_size;
+        
+        //update our counters and input position pointer
+        curr_position += traversed;
+        remaining -= traversed;
+        total_written += traversed;
+
+        /**
+         * Entry is complete due to '\n' being found. 
+         * Add completed entry to circular buffer.
+         * Also, check to see if we had to overwrite an entry and free it.
+        */
+        if(end_of_packet)
+        {
+            const char *overwrite_value = aesd_circular_buffer_add_entry(&dev->cbuf, &dev->working_entry);
+            
+            if(overwrite_value)
+            {
+                kfree(overwrite_value);
+            }
+
+            dev->working_entry.buffptr = NULL;
+            dev->working_entry.size = 0;
+        }
+        
+    }
+
+    kfree(kernel_copy);
+    retval = (ssize_t)total_written;
+    goto out;
+
+    out:
+        mutex_unlock(&dev->lock);
+        return retval;
 }
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
@@ -87,8 +292,6 @@ static int aesd_setup_cdev(struct aesd_dev *dev)
     return err;
 }
 
-
-
 int aesd_init_module(void)
 {
     dev_t dev = 0;
@@ -102,10 +305,8 @@ int aesd_init_module(void)
     }
     memset(&aesd_device,0,sizeof(struct aesd_dev));
 
-    /**
-     * TODO: initialize the AESD specific portion of the device
-     */
-
+    mutex_init(&aesd_device.lock);
+    aesd_circular_buffer_init(&aesd_device.cbuf);
     result = aesd_setup_cdev(&aesd_device);
 
     if( result ) {
@@ -121,13 +322,18 @@ void aesd_cleanup_module(void)
 
     cdev_del(&aesd_device.cdev);
 
-    /**
-     * TODO: cleanup AESD specific poritions here as necessary
-     */
+    //free possible data in the working entry buffptr 
+    kfree(aesd_device.working_entry.buffptr);
 
+    //free the buffptrs in the circular buffer
+    uint8_t index;
+    struct aesd_buffer_entry *entry;
+    AESD_CIRCULAR_BUFFER_FOREACH(entry,&aesd_device.cbuf,index) 
+    {
+       kfree(entry->buffptr);
+    }
     unregister_chrdev_region(devno, 1);
 }
-
 
 
 module_init(aesd_init_module);
