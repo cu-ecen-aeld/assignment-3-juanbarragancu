@@ -23,7 +23,16 @@
 #include <time.h>
 #include "queue.h"
 
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
+#if USE_AESD_CHAR_DEVICE
+#define FILE_ADDR "/dev/aesdchar" //filepath of where the file is located
+#else
 #define FILE_ADDR "/var/tmp/aesdsocketdata" //filepath of where the file is located
+#endif
+
 #define BACKLOG 10 //argument for listen()
 #define INTITAL_ALARM 10 //when should the first alarm go off
 #define INTERVAL 10 //how many seconds the susbequents timers should go off
