@@ -18,6 +18,7 @@
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -25,6 +26,18 @@ MODULE_AUTHOR("Juan Barragan");
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
+
+size_t total_buffer_length(struct aesd_dev *dev)
+{
+    uint8_t index;
+    size_t total_len = 0;
+    struct aesd_buffer_entry *entry;
+    AESD_CIRCULAR_BUFFER_FOREACH(entry,&dev->cbuf,index) 
+    {
+        total_len += entry->size;
+    }
+    return total_len;
+}
 
 int aesd_open(struct inode *inode, struct file *filp)
 {
@@ -53,7 +66,6 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
     ssize_t retval = 0;
-    size_t total_buf_len = 0;
     size_t traversed = 0;
     size_t remaining = count;
     size_t unread_bytes = 0;
@@ -72,15 +84,8 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
         goto out;
     }
 
-    uint8_t index;
-    struct aesd_buffer_entry *entry;
-    AESD_CIRCULAR_BUFFER_FOREACH(entry,&dev->cbuf,index) 
-    {
-        total_buf_len += entry->size;
-    }
-
     //checking whether f_pos is at the EOF or beyond it
-    if(*f_pos >= total_buf_len)
+    if(*f_pos >= total_buffer_length(dev))
     {
         goto out;
     }
@@ -270,12 +275,137 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         return retval;
 }
 
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
+{
+    loff_t new_pos = 0;
+    loff_t length = 0;
+    struct aesd_dev *dev = filp->private_data;
+    if(mutex_lock_interruptible(&dev->lock))
+    {
+        return -ERESTARTSYS;
+    }
+
+    length = total_buffer_length(dev);
+    new_pos = fixed_size_llseek(filp, offset, whence, length);
+
+    goto out;
+
+    out:
+        mutex_unlock(&dev->lock);
+        return new_pos;
+}
+
+/**
+ * Adjust the file offset (f_pos) parameter of @param filp based on the location specified by
+ * @param write_cmd (the zero referenced command to locate) 
+ * and @param write_cmd_offset (the zero referenced offset into the command)
+ * @return 0 if successful, negative if error occurred:
+ *  -ERESTARTSYS if mutex could not be obtained
+ *  -EINVAL if write command or write_cmd_offset was out of range
+ */
+static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, unsigned int write_cmd_offset)
+{
+    long retval = -EINVAL;
+    struct aesd_dev *dev = filp->private_data;
+
+    if(mutex_lock_interruptible(&dev->lock))
+    {
+        return -ERESTARTSYS;
+    }
+
+    //check write_cmd isn't bigger than the possible amount of cmds in the circular buffer
+    if(write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+    {
+        goto out;
+    }
+    
+    uint8_t cmd_idx = dev->cbuf.out_offs;
+    //if write_cmd is 0 we just need the offset of the current read ptr index
+    if(write_cmd == 0)
+    {
+        //check entry is valid
+        if(dev->cbuf.entry[cmd_idx].buffptr == NULL
+            || dev->cbuf.entry[cmd_idx].size <= write_cmd_offset)
+        {
+            goto out;
+        }
+
+        //update f_pos with the offset
+        filp->f_pos = write_cmd_offset;
+    }
+    else
+    {
+        size_t traversed_length = 0;
+        while(write_cmd != 0)
+        {
+            //keep a running total of the length of the buffer that was traversed
+            traversed_length += dev->cbuf.entry[cmd_idx].size;
+            cmd_idx++;
+
+            //circle the index back to the beginning of the buffer if we hit the end
+            if(cmd_idx == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+            {
+                cmd_idx = 0;
+            }
+
+            write_cmd--;
+        }
+
+        //check entry is valid
+        if(dev->cbuf.entry[cmd_idx].buffptr == NULL
+            || dev->cbuf.entry[cmd_idx].size <= write_cmd_offset)
+        {
+            goto out;
+        }
+
+        //update f_pos with the offset and the total length of the circular buffer that was traversed
+        filp->f_pos = traversed_length + write_cmd_offset;
+    }
+
+    retval = 0;
+    goto out;
+
+    out:
+        mutex_unlock(&dev->lock);
+        return retval;
+
+}
+
+static long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    long retval;
+
+    switch(cmd)
+    {
+        case AESDCHAR_IOCSEEKTO:
+            struct aesd_seekto seekto;
+            if(copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)) != 0)
+            {
+                retval = -EFAULT;
+            }
+            else
+            {
+                retval = aesd_adjust_file_offset(filp, seekto.write_cmd, seekto.write_cmd_offset);
+            }
+            break;
+        default:
+            break;
+    }
+
+    goto out;
+
+    out:
+        return retval;
+}
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek =   aesd_llseek,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
