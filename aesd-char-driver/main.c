@@ -280,13 +280,22 @@ loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
     loff_t new_pos = 0;
     loff_t length = 0;
     struct aesd_dev *dev = filp->private_data;
+
+    PDEBUG("aesd_llseek: offset:%lld whence=%d current_pos=%lld\n",
+                offset, whence, filp->f_pos);
+
     if(mutex_lock_interruptible(&dev->lock))
     {
+        PDEBUG("aesd_llseek: interrupted while attempting to acquire lock\n");
         return -ERESTARTSYS;
     }
 
     length = total_buffer_length(dev);
+    PDEBUG("aesd_llseek: total circular buffer length:%lld\n", length);
     new_pos = fixed_size_llseek(filp, offset, whence, length);
+
+    PDEBUG("aesd_llseek: fixed_size_llseek result=%lld new_pos=%lld\n",
+                new_pos, filp->f_pos);
 
     goto out;
 
@@ -379,6 +388,7 @@ static long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     {
         case AESDCHAR_IOCSEEKTO:
             struct aesd_seekto seekto;
+            //copy aesd_seekto struct from the userspace application
             if(copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)) != 0)
             {
                 retval = -EFAULT;
