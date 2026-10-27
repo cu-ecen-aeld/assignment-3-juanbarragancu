@@ -188,6 +188,9 @@ static void *receive_send_client(void* thread_param)
     char *data = NULL; //client data
     size_t data_len = 0; //length of client data
     char recv_buffer[KILOBYTE]; //buffer to hold received data
+    int x;
+    int y;
+    bool aesdchar_iocseekto_called = false;
     struct thread_data* thread_func_args = (struct thread_data *) thread_param;
 
     while(true)
@@ -201,6 +204,21 @@ static void *receive_send_client(void* thread_param)
             break;
         }
 
+        if(USE_AESD_CHAR_DEVICE)
+        {
+            if(sscanf(recv_buffer, "AESDCHAR_IOCSEEKTO:%d,%d", &x, &y) == 2)
+            {
+                struct aesd_seekto seekto;
+                seekto.write_cmd = x;
+                seekto.write_cmd_offset = y;
+                if(ioctl(thread_func_args->fd, AESDCHAR_IOCSEEKTO, &seekto) != 0)
+                {
+                    syslog(LOG_ERR, "ioctl() failed");
+                    break;
+                }
+                aesdchar_iocseekto_called = true;
+            }
+        }
         /* temp variable to save increased size of data based on 
         prior data size and new bytes received */
         char *tmp = realloc(data, data_len + (size_t)bytes_received);
@@ -226,58 +244,65 @@ static void *receive_send_client(void* thread_param)
         while(traversed < data_len) 
         {
             curr_position = data + traversed;
-            //search for packet break
-            char *end_of_packet = memchr(curr_position, '\n', data_len - traversed);
 
-            //packet break not found
-            if(end_of_packet == NULL) 
+            //write only implemented if aesdchar_iocseekto wasn't passed
+            if(!aesdchar_iocseekto_called)
             {
-                break;
-            }
-            
-            size_t len_of_packet = (size_t)(end_of_packet - curr_position) + 1;
+                //search for packet break
+                char *end_of_packet = memchr(curr_position, '\n', data_len - traversed);
 
-            if(!USE_AESD_CHAR_DEVICE)
-            {
-                //lock here so the worker threads can't overwrite each other
-                if(pthread_mutex_lock(thread_func_args->mutex) != 0)
+                //packet break not found
+                if(end_of_packet == NULL) 
                 {
-                    syslog(LOG_ERR,"mutex lock failed\n");
-                    cleanup_worker_thread_and_data(thread_func_args, data);
-                    return NULL;
+                    break;
                 }
-            }
-
-            if(packet_work(thread_func_args->fd, curr_position, len_of_packet, WRITE) != 0)
-            {
-                syslog(LOG_ERR, "write() failed");
+                
+                size_t len_of_packet = (size_t)(end_of_packet - curr_position) + 1;
 
                 if(!USE_AESD_CHAR_DEVICE)
                 {
-                    if(pthread_mutex_unlock(thread_func_args->mutex) != 0)
+                    //lock here so the worker threads can't overwrite each other
+                    if(pthread_mutex_lock(thread_func_args->mutex) != 0)
                     {
-                        syslog(LOG_ERR, "mutex unlock failed at write()\n");
+                        syslog(LOG_ERR,"mutex lock failed\n");
+                        cleanup_worker_thread_and_data(thread_func_args, data);
+                        return NULL;
                     }
                 }
-
-                cleanup_worker_thread_and_data(thread_func_args, data);
-                return NULL;
-            }
-
-            if(!USE_AESD_CHAR_DEVICE)
-            {
-                //return to the beginning of the file
-                off_t pos_in_file = lseek(thread_func_args->fd, 0, SEEK_SET);
-                if(pos_in_file == (off_t) -1)
+                
+                if(packet_work(thread_func_args->fd, curr_position, len_of_packet, WRITE) != 0)
                 {
-                    //error returning to the start of the file
-                    if(pthread_mutex_unlock(thread_func_args->mutex) != 0)
+                    syslog(LOG_ERR, "write() failed");
+
+                    if(!USE_AESD_CHAR_DEVICE)
                     {
-                        syslog(LOG_ERR, "mutex unlock failed at lseek()\n");
+                        if(pthread_mutex_unlock(thread_func_args->mutex) != 0)
+                        {
+                            syslog(LOG_ERR, "mutex unlock failed at write()\n");
+                        }
                     }
+
                     cleanup_worker_thread_and_data(thread_func_args, data);
                     return NULL;
                 }
+
+                if(!USE_AESD_CHAR_DEVICE)
+                {
+                    //return to the beginning of the file
+                    off_t pos_in_file = lseek(thread_func_args->fd, 0, SEEK_SET);
+                    if(pos_in_file == (off_t) -1)
+                    {
+                        //error returning to the start of the file
+                        if(pthread_mutex_unlock(thread_func_args->mutex) != 0)
+                        {
+                            syslog(LOG_ERR, "mutex unlock failed at lseek()\n");
+                        }
+                        cleanup_worker_thread_and_data(thread_func_args, data);
+                        return NULL;
+                    }
+                }
+                traversed += len_of_packet;
+                curr_position += len_of_packet;
             }
 
             ssize_t bytes_read = 1;
@@ -321,8 +346,6 @@ static void *receive_send_client(void* thread_param)
                 syslog(LOG_ERR, "mutex unlock failed at end of recieve_send_client()\n");
             }
 
-            traversed += len_of_packet;
-            curr_position += len_of_packet;
         }
 
         if(traversed > 0)
